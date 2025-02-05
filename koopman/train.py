@@ -17,7 +17,7 @@ def train(
     decay_epochs: list[int],
     nu: float = 0.0,
     eta: float = 0.0,
-    backward: int = 0,
+    backward: int = 1,
     num_steps: int = 1,
     num_back_steps: int = 1,
     grad_clip: float = 1.0,
@@ -39,8 +39,7 @@ def train(
             for k in range(num_steps):
                 loss_forward += mse_loss(forward_preds[k], batch[k + 1])
             loss_identity = mse_loss(forward_preds[-1], batch[0]) * num_steps
-            loss_backward = 0.0
-            loss_consistency = 0.0
+            loss_backward, loss_consistency = 0.0, 0.0
             if backward:
                 v_backward = jax.vmap(lambda x: model(x, mode="backward"))
                 _, back_preds = v_backward(batch[-1])
@@ -50,12 +49,14 @@ def train(
                 B = model.inverse_dynamics.linear.weight
                 latent_dim = A.shape[-1]
                 for k in range(1, latent_dim + 1):
-                    A_sub = A[:, :k]
-                    B_sub = B[:k, :]
+                    A1 = A[:, :k]
+                    B1 = B[:k, :]
+                    A2 = A[:k, :]
+                    B2 = B[:, :k]
                     I_k = jnp.eye(k)
                     loss_consistency += (
-                        jnp.sum((B_sub @ A_sub - I_k) ** 2)
-                        + jnp.sum((A_sub @ B_sub - I_k) ** 2)
+                        jnp.sum((B1 @ A1 - I_k) ** 2)
+                        + jnp.sum((A2 @ B2 - I_k) ** 2)
                     ) / (2.0 * k)
             return loss_forward + lamb * loss_identity + nu * loss_backward + eta * loss_consistency
 

@@ -1,34 +1,10 @@
 import argparse
 import os
 import numpy as np
-import matplotlib.pyplot as plt
-from jax import numpy as jnp, random as jr
-import jax
+from jax import random as jr
 from koopman.model import KoopmanModel
 from koopman.train import train
-from koopman.data import pendulum_data, add_channels, get_train_loader
-
-
-def test_model(
-    model, X_test: np.ndarray, pred_steps: int, m: int, n: int
-) -> np.ndarray:
-    errors = []
-    num_tests = min(30, X_test.shape[0] - pred_steps)
-    for i in range(num_tests):
-        error_temp = []
-        x0 = X_test[i].reshape(-1)
-        latent = model.encoder(x0)
-        for j in range(pred_steps):
-            latent = model.dynamics(latent)
-            x_pred = model.decoder(latent)
-            target_sample = X_test[i + j + 1].reshape(m, n)
-            rel_error = jnp.linalg.norm(x_pred - target_sample) / jnp.linalg.norm(
-                target_sample
-            )
-            error_temp.append(rel_error)
-        errors.append(np.array(error_temp))
-    return np.array(errors)
-
+from koopman.data import pendulum_data, get_train_loader
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -47,7 +23,6 @@ if __name__ == "__main__":
     parser.add_argument("--lr_decay", type=float, default=0.2)
     parser.add_argument("--init_scale", type=float, default=0.99)
     parser.add_argument("--gradclip", type=float, default=0.05)
-    parser.add_argument("--pred_steps", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--baseline", action="store_true")
     args = parser.parse_args()
@@ -60,23 +35,16 @@ if __name__ == "__main__":
     if not os.path.exists(args.folder):
         os.makedirs(args.folder)
 
-    X_train, X_test, X_train_clean, X_test_clean, m, n = pendulum_data(
+    x_train, x_test, x_train_clean, x_test_clean, input_dim = pendulum_data(
         noise=args.noise, theta=args.theta
     )
-    X_train = add_channels(X_train)
-    X_test = add_channels(X_test)
-    X_train_flat = X_train.reshape(X_train.shape[0], -1)
-    X_test_flat = X_test.reshape(X_test.shape[0], -1)
-
     train_sequences = [
-        X_train_flat[i:] if i == 0 else X_train_flat[:-i]
-        for i in range(args.steps, -1, -1)
+        x_train[i:] if i == 0 else x_train[:-i] for i in range(args.steps, -1, -1)
     ]
     train_loader = list(get_train_loader(train_sequences, args.batch))
 
     model = KoopmanModel(
-        m,
-        n,
+        input_dim,
         args.bottleneck,
         args.steps,
         args.steps_back,
@@ -84,6 +52,7 @@ if __name__ == "__main__":
         args.init_scale,
         key=key,
     )
+
     model, _, _ = train(
         model,
         train_loader,
@@ -100,20 +69,3 @@ if __name__ == "__main__":
         num_back_steps=args.steps_back,
         grad_clip=args.gradclip,
     )
-
-    errors = test_model(model, X_test_flat, args.pred_steps, m, n)
-    mean_errors = np.mean(errors, axis=0)
-
-    plt.figure(figsize=(10, 6))
-    plt.plot(mean_errors, "o--", lw=2, color="#377eb8")
-    plt.fill_between(
-        np.arange(mean_errors.shape[0]),
-        np.quantile(errors, 0.05, axis=0),
-        np.quantile(errors, 0.95, axis=0),
-        color="#377eb8",
-        alpha=0.2,
-    )
-    plt.xlabel("Time step", fontsize=14)
-    plt.ylabel("Relative prediction error", fontsize=14)
-    plt.tight_layout()
-    plt.show()

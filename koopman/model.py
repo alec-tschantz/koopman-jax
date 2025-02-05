@@ -6,24 +6,23 @@ class Encoder(eqx.Module):
     fc1: eqx.nn.Linear
     fc2: eqx.nn.Linear
     fc3: eqx.nn.Linear
-    alpha: int
     input_dim: int
     latent_dim: int
+    alpha: int
 
     def __init__(
         self,
-        input_rows: int,
-        input_cols: int,
+        input_dim: int,
         latent_dim: int,
         alpha: int = 1,
         *,
         key: jr.PRNGKey,
     ):
-        self.input_dim = input_rows * input_cols
+        self.input_dim = input_dim
         self.latent_dim = latent_dim
         self.alpha = alpha
         key1, key2, key3 = jr.split(key, 3)
-        self.fc1 = eqx.nn.Linear(self.input_dim, 16 * alpha, key=key1)
+        self.fc1 = eqx.nn.Linear(input_dim, 16 * alpha, key=key1)
         self.fc2 = eqx.nn.Linear(16 * alpha, 16 * alpha, key=key2)
         self.fc3 = eqx.nn.Linear(16 * alpha, latent_dim, key=key3)
 
@@ -37,34 +36,31 @@ class Decoder(eqx.Module):
     fc1: eqx.nn.Linear
     fc2: eqx.nn.Linear
     fc3: eqx.nn.Linear
-    output_rows: int
-    output_cols: int
     latent_dim: int
+    output_dim: int
     alpha: int
 
     def __init__(
         self,
-        output_rows: int,
-        output_cols: int,
         latent_dim: int,
+        output_dim: int,
         alpha: int = 1,
         *,
         key: jr.PRNGKey,
     ):
-        self.output_rows = output_rows
-        self.output_cols = output_cols
         self.latent_dim = latent_dim
+        self.output_dim = output_dim
         self.alpha = alpha
         key1, key2, key3 = jr.split(key, 3)
         self.fc1 = eqx.nn.Linear(latent_dim, 16 * alpha, key=key1)
         self.fc2 = eqx.nn.Linear(16 * alpha, 16 * alpha, key=key2)
-        self.fc3 = eqx.nn.Linear(16 * alpha, output_rows * output_cols, key=key3)
+        self.fc3 = eqx.nn.Linear(16 * alpha, output_dim, key=key3)
 
     def __call__(self, x: Array) -> Array:
         x = jnp.tanh(self.fc1(x))
         x = jnp.tanh(self.fc2(x))
         x = jnp.tanh(self.fc3(x))
-        return x.reshape(self.output_rows, self.output_cols)
+        return x
 
 
 class Dynamics(eqx.Module):
@@ -109,8 +105,7 @@ class KoopmanModel(eqx.Module):
 
     def __init__(
         self,
-        input_rows: int,
-        input_cols: int,
+        input_dim: int,
         latent_dim: int,
         num_steps: int,
         num_back_steps: int,
@@ -120,10 +115,10 @@ class KoopmanModel(eqx.Module):
         key: jr.PRNGKey,
     ):
         key_enc, key_dyn, key_dec, key_inv = jr.split(key, 4)
-        self.encoder = Encoder(input_rows, input_cols, latent_dim, alpha, key=key_enc)
+        self.encoder = Encoder(input_dim, latent_dim, alpha, key=key_enc)
         self.dynamics = Dynamics(latent_dim, init_scale, key=key_dyn)
         self.inverse_dynamics = InverseDynamics(latent_dim, self.dynamics, key=key_inv)
-        self.decoder = Decoder(input_rows, input_cols, latent_dim, alpha, key=key_dec)
+        self.decoder = Decoder(latent_dim, input_dim, alpha, key=key_dec)
         self.num_steps = num_steps
         self.num_back_steps = num_back_steps
 
@@ -132,16 +127,19 @@ class KoopmanModel(eqx.Module):
         back_predictions = []
         z = self.encoder(x)
         q = z
+
         if mode == "forward":
             for _ in range(self.num_steps):
                 q = self.dynamics(q)
                 predictions.append(self.decoder(q))
             predictions.append(self.decoder(z))
             return tuple(predictions), tuple(back_predictions)
+
         if mode == "backward":
             for _ in range(self.num_back_steps):
                 q = self.inverse_dynamics(q)
                 back_predictions.append(self.decoder(q))
             back_predictions.append(self.decoder(z))
             return tuple(predictions), tuple(back_predictions)
+
         return tuple(predictions), tuple(back_predictions)
