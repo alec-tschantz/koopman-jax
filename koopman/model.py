@@ -1,14 +1,11 @@
-from jax import Array, numpy as jnp, random as jr
 import equinox as eqx
+from jax import Array, numpy as jnp, random as jr, lax
 
 
 class Encoder(eqx.Module):
     fc1: eqx.nn.Linear
     fc2: eqx.nn.Linear
     fc3: eqx.nn.Linear
-    input_dim: int
-    latent_dim: int
-    alpha: int
 
     def __init__(
         self,
@@ -18,9 +15,6 @@ class Encoder(eqx.Module):
         *,
         key: jr.PRNGKey,
     ):
-        self.input_dim = input_dim
-        self.latent_dim = latent_dim
-        self.alpha = alpha
         key1, key2, key3 = jr.split(key, 3)
         self.fc1 = eqx.nn.Linear(input_dim, 16 * alpha, key=key1)
         self.fc2 = eqx.nn.Linear(16 * alpha, 16 * alpha, key=key2)
@@ -36,9 +30,6 @@ class Decoder(eqx.Module):
     fc1: eqx.nn.Linear
     fc2: eqx.nn.Linear
     fc3: eqx.nn.Linear
-    latent_dim: int
-    output_dim: int
-    alpha: int
 
     def __init__(
         self,
@@ -48,9 +39,6 @@ class Decoder(eqx.Module):
         *,
         key: jr.PRNGKey,
     ):
-        self.latent_dim = latent_dim
-        self.output_dim = output_dim
-        self.alpha = alpha
         key1, key2, key3 = jr.split(key, 3)
         self.fc1 = eqx.nn.Linear(latent_dim, 16 * alpha, key=key1)
         self.fc2 = eqx.nn.Linear(16 * alpha, 16 * alpha, key=key2)
@@ -95,20 +83,16 @@ class InverseDynamics(eqx.Module):
         return self.linear(x)
 
 
-class KoopmanModel(eqx.Module):
+class Koopman(eqx.Module):
     encoder: Encoder
+    decoder: Decoder
     dynamics: Dynamics
     inverse_dynamics: InverseDynamics
-    decoder: Decoder
-    num_steps: int
-    num_back_steps: int
 
     def __init__(
         self,
         input_dim: int,
         latent_dim: int,
-        num_steps: int,
-        num_back_steps: int,
         alpha: int = 1,
         init_scale: float = 1.0,
         *,
@@ -119,27 +103,24 @@ class KoopmanModel(eqx.Module):
         self.dynamics = Dynamics(latent_dim, init_scale, key=key_dyn)
         self.inverse_dynamics = InverseDynamics(latent_dim, self.dynamics, key=key_inv)
         self.decoder = Decoder(latent_dim, input_dim, alpha, key=key_dec)
-        self.num_steps = num_steps
-        self.num_back_steps = num_back_steps
 
-    def __call__(self, x: Array, mode: str = "forward"):
-        predictions = []
-        back_predictions = []
-        z = self.encoder(x)
-        q = z
+    def forward(self, x: Array, num_steps: int):
+        def step(z, _):
+            z = self.dynamics(z)
+            return z, self.decoder(z)
 
-        if mode == "forward":
-            for _ in range(self.num_steps):
-                q = self.dynamics(q)
-                predictions.append(self.decoder(q))
-            predictions.append(self.decoder(z))
-            return tuple(predictions), tuple(back_predictions)
+        z0 = self.encoder(x)
+        _, xs = lax.scan(step, z0, None, length=num_steps)
+        x0 = self.decoder(z0)
+        return jnp.concatenate([x0[None], xs], axis=0)
 
-        if mode == "backward":
-            for _ in range(self.num_back_steps):
-                q = self.inverse_dynamics(q)
-                back_predictions.append(self.decoder(q))
-            back_predictions.append(self.decoder(z))
-            return tuple(predictions), tuple(back_predictions)
 
-        return tuple(predictions), tuple(back_predictions)
+    def backward(self, x: Array, num_steps: int):
+        def step(z, _):
+            z = self.inverse_dynamics(z)
+            return z, self.decoder(z)
+
+        z0 = self.encoder(x)
+        _, xs = lax.scan(step, z0, None, length=num_steps)
+        x0 = self.decoder(z0)
+        return jnp.concatenate([x0[None], xs], axis=0)

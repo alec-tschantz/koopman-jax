@@ -1,6 +1,8 @@
+from typing import Tuple, List
+
+
 import numpy as np
 from scipy.special import ellipj, ellipk
-from typing import Tuple, List
 
 
 def pendulum_dynamics(t: np.ndarray, theta0: float) -> np.ndarray:
@@ -17,29 +19,18 @@ def pendulum_dynamics(t: np.ndarray, theta0: float) -> np.ndarray:
 
 def pendulum_data(
     noise: float = 0.0, theta: float = 2.4, train_size: int = 600
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
-    np.random.seed(1)
+) -> Tuple[np.ndarray, np.ndarray]:
     t_series = np.arange(0, 2200 * 0.1, 0.1)
     data = pendulum_dynamics(t_series, theta)
-    data = data.T
-    clean_data = data.copy()
-    data += np.random.randn(*data.shape) * noise
-
-    rotation_matrix = np.random.randn(64, 2)
-    rotation_matrix, _ = np.linalg.qr(rotation_matrix)
-    data = data.T @ rotation_matrix.T
-    clean_data = clean_data.T @ rotation_matrix.T
-
     data = 2 * (data - np.min(data)) / np.ptp(data) - 1
-    clean_data = 2 * (clean_data - np.min(clean_data)) / np.ptp(clean_data) - 1
-
     x_train, x_test = data[:train_size], data[train_size:]
-    x_train_clean, x_test_clean = clean_data[:train_size], clean_data[train_size:]
-
-    return x_train, x_test, x_train_clean, x_test_clean, x_train.shape[1]
+    return x_train, x_test
 
 
-def get_train_loader(train_sequences: List[np.ndarray], batch_size: int):
+def train_loader(data: np.ndarray, num_steps: int, batch_size: int):
+    train_sequences = [
+        data[i:] if i == 0 else data[:-i] for i in range(num_steps, -1, -1)
+    ]
     num_samples = train_sequences[0].shape[0]
     indices = np.arange(num_samples)
     np.random.shuffle(indices)

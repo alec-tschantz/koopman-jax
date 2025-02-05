@@ -1,75 +1,87 @@
-from jax import Array, numpy as jnp
-import jax
+from jax import Array, numpy as jnp, vmap
+
 import optax
 import equinox as eqx
+from tqdm import trange
+
 
 def mse_loss(pred: Array, target: Array) -> Array:
     return jnp.mean((pred - target) ** 2)
 
+
+def forward_loss(model, batch, num_steps):
+    preds = vmap(model.forward, in_axes=(0, None))(batch[0], num_steps)
+    preds = preds.swapaxes(0, 1)
+    return sum(mse_loss(preds[k], batch[k + 1]) for k in range(num_steps))
+
+
+def identity_loss(model, batch, num_steps):
+    # TODO:
+    preds = vmap(model.forward, in_axes=(0, None))(batch[0], num_steps)
+    preds = preds.swapaxes(0, 1)
+    return mse_loss(preds[-1], batch[0]) * num_steps
+
+
+def backward_loss(model, batch, num_steps):
+    back_preds = vmap(model.backward, in_axes=(0, None))(batch[-1], num_steps)
+    back_preds = back_preds.swapaxes(0, 1)
+    return sum(mse_loss(back_preds[k], batch[::-1][k + 1]) for k in range(num_steps))
+
+
+def consistency_loss(model):
+    A, B = model.dynamics.linear.weight, model.inverse_dynamics.linear.weight
+    latent_dim = A.shape[-1]
+    return sum(
+        (
+            jnp.sum((B[:k, :] @ A[:, :k] - jnp.eye(k)) ** 2)
+            + jnp.sum((A[:k, :] @ B[:, :k] - jnp.eye(k)) ** 2)
+        )
+        / (2.0 * k)
+        for k in range(1, latent_dim + 1)
+    )
+
+
 def train(
     model: eqx.Module,
     train_loader,
-    lr: float,
-    weight_decay: float,
-    lamb: float,
-    num_epochs: int,
-    lr_decay: float,
-    decay_epochs: list[int],
-    nu: float = 0.0,
-    eta: float = 0.0,
-    backward: int = 1,
-    num_steps: int = 1,
-    num_back_steps: int = 1,
+    num_epochs: int = 600,
+    learning_rate: float = 1e-2,
+    weight_decay: float = 0.0,
+    forward_steps: int = 8,
+    backward_steps: int = 8,
+    beta_forward: float = 1.0,
+    beta_backward: float = 1e-1,
+    beta_identity: float = 1.0,
+    beta_consistency: float = 1e-2,
     grad_clip: float = 1.0,
 ):
-    current_lr = lr
     optimizer = optax.chain(
         optax.clip_by_global_norm(grad_clip),
-        optax.adamw(current_lr, weight_decay=weight_decay),
+        optax.adamw(learning_rate, weight_decay=weight_decay),
     )
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
-    epoch_history, loss_history = [], []
 
     @eqx.filter_jit
     def update_step(model, opt_state, batch):
         def loss_fn(model):
-            v_forward = jax.vmap(lambda x: model(x, mode="forward"))
-            forward_preds, _ = v_forward(batch[0])
-            loss_forward = 0.0
-            for k in range(num_steps):
-                loss_forward += mse_loss(forward_preds[k], batch[k + 1])
-            loss_identity = mse_loss(forward_preds[-1], batch[0]) * num_steps
-            loss_backward, loss_consistency = 0.0, 0.0
-            if backward:
-                v_backward = jax.vmap(lambda x: model(x, mode="backward"))
-                _, back_preds = v_backward(batch[-1])
-                for k in range(num_back_steps):
-                    loss_backward += mse_loss(back_preds[k], batch[::-1][k + 1])
-                A = model.dynamics.linear.weight
-                B = model.inverse_dynamics.linear.weight
-                latent_dim = A.shape[-1]
-                for k in range(1, latent_dim + 1):
-                    A1 = A[:, :k]
-                    B1 = B[:k, :]
-                    A2 = A[:k, :]
-                    B2 = B[:, :k]
-                    I_k = jnp.eye(k)
-                    loss_consistency += (
-                        jnp.sum((B1 @ A1 - I_k) ** 2)
-                        + jnp.sum((A2 @ B2 - I_k) ** 2)
-                    ) / (2.0 * k)
-            return loss_forward + lamb * loss_identity + nu * loss_backward + eta * loss_consistency
+            return (
+                beta_forward * forward_loss(model, batch, forward_steps)
+                + beta_backward * identity_loss(model, batch, forward_steps)
+                + beta_identity * backward_loss(model, batch, backward_steps)
+                + beta_consistency * consistency_loss(model)
+            )
 
         loss, grads = eqx.filter_value_and_grad(loss_fn)(model)
         updates, opt_state_new = optimizer.update(grads, opt_state, model)
         model = eqx.apply_updates(model, updates)
         return model, opt_state_new, loss
 
-    for epoch in range(num_epochs):
+    epoch_losses = []
+    for epoch in trange(num_epochs, desc="Training"):
+        total_loss = 0.0
         for batch in train_loader:
             model, opt_state, loss = update_step(model, opt_state, batch)
-        if epoch in decay_epochs:
-            current_lr *= lr_decay
-        loss_history.append(loss)
-        epoch_history.append(epoch)
-    return model, optimizer, [epoch_history, loss_history[-1], 0.0]
+            total_loss = total_loss + loss
+        epoch_losses.append(total_loss / len(train_loader))
+
+    return model, epoch_losses
