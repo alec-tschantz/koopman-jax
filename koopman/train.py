@@ -4,6 +4,7 @@ import optax
 import equinox as eqx
 from tqdm import trange
 
+import koopman
 
 def mse_loss(pred: Array, target: Array) -> Array:
     return jnp.mean((pred - target) ** 2)
@@ -16,10 +17,9 @@ def forward_loss(model, batch, num_steps):
 
 
 def identity_loss(model, batch, num_steps):
-    # TODO:
     preds = vmap(model.forward, in_axes=(0, None))(batch[0], num_steps)
     preds = preds.swapaxes(0, 1)
-    return mse_loss(preds[-1], batch[0]) * num_steps
+    return mse_loss(preds[0], batch[0]) * num_steps
 
 
 def backward_loss(model, batch, num_steps):
@@ -43,8 +43,9 @@ def consistency_loss(model):
 
 def train(
     model: eqx.Module,
-    train_loader,
+    x_train: Array,
     num_epochs: int = 600,
+    batch_dim: int = 64,
     learning_rate: float = 1e-2,
     weight_decay: float = 0.0,
     forward_steps: int = 8,
@@ -79,6 +80,7 @@ def train(
     epoch_losses = []
     for epoch in trange(num_epochs, desc="Training"):
         total_loss = 0.0
+        train_loader = list(koopman.train_loader(x_train, forward_steps, batch_dim))
         for batch in train_loader:
             model, opt_state, loss = update_step(model, opt_state, batch)
             total_loss = total_loss + loss
