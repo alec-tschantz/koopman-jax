@@ -19,7 +19,7 @@ def forward_loss(model, batch, num_steps):
 def identity_loss(model, batch, num_steps):
     preds = vmap(model.forward, in_axes=(0, None))(batch[0], num_steps)
     preds = preds.swapaxes(0, 1)
-    return mse_loss(preds[0], batch[0]) * num_steps
+    return mse_loss(preds[-1], batch[0]) * num_steps # TODO
 
 
 def backward_loss(model, batch, num_steps):
@@ -54,11 +54,12 @@ def train(
     beta_backward: float = 1e-1,
     beta_identity: float = 1.0,
     beta_consistency: float = 1e-2,
-    grad_clip: float = 1.0,
+    grad_clip: float = 0.05,
 ):
+    lr_schedule = optax.linear_schedule(learning_rate, 1e-4, num_epochs)
     optimizer = optax.chain(
         optax.clip_by_global_norm(grad_clip),
-        optax.adamw(learning_rate, weight_decay=weight_decay),
+        optax.adamw(lr_schedule, weight_decay=weight_decay),
     )
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 

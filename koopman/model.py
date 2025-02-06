@@ -94,7 +94,7 @@ class Koopman(eqx.Module):
         input_dim: int,
         latent_dim: int,
         alpha: int = 1,
-        init_scale: float = 1.0,
+        init_scale: float = 0.99,
         *,
         key: jr.PRNGKey,
     ):
@@ -110,8 +110,9 @@ class Koopman(eqx.Module):
             return z, self.decoder(z)
 
         z0 = self.encoder(x)
-        _, xs = lax.scan(step, z0, None, length=num_steps)
         x0 = self.decoder(z0)
+
+        _, xs = lax.scan(step, z0, None, length=num_steps)
         return jnp.concatenate([x0[None], xs], axis=0)
 
 
@@ -121,6 +122,7 @@ class Koopman(eqx.Module):
             return z, self.decoder(z)
 
         z0 = self.encoder(x)
-        _, xs = lax.scan(step, z0, None, length=num_steps)
         x0 = self.decoder(z0)
+
+        _, xs = lax.scan(step, z0, None, length=num_steps)
         return jnp.concatenate([x0[None], xs], axis=0)
